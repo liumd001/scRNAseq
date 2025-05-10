@@ -1,0 +1,823 @@
+---
+title: "Co-expression"
+author: "Mingdong Liu"
+date: "1/17/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##   
+
+```{r echo = FALSE, message = FALSE}
+require(plotly, quietly = TRUE)
+require(GGally, quietly = TRUE)
+require(pheatmap, quietly = TRUE)
+require(compiler, quietly = TRUE)
+require(boot, quietly = TRUE)
+require(parallel, quietly = TRUE)
+require(dplyr, quietly = TRUE)
+require(lme4, quietly = TRUE)
+require(VennDiagram)
+require(ggplot2, quietly = TRUE)
+require(ggven, quietly = TRUE)
+require(flextable, quietly = TRUE)
+require(DESeq2, quietly = TRUE)
+require(GGally, quietly = TRUE)
+library(tidyverse, quietly = TRUE)
+library(Seurat, quietly = TRUE)
+require(ggvenn, quietly = TRUE)
+require(cowplot, quietly = TRUE)
+
+
+set.seed(1234)
+out_dir = "U:\\team_share\\tfls\\2022_12_31_scRNASeq"
+out_dir1 = "U:\\team_share\\tfls\\2023_1_17_scRNASeq"
+
+
+select = dplyr::select
+rename = dplyr::rename
+recode = dplyr::recode
+
+
+
+hk = c("ACTB", "PGK1","GAPDH","B2M","HPRT1","GUSB","SDHA","RPL13A")
+
+emarkers = data.frame(fullname = c("Prostate cancer-associated protein 6/ P501S/ prostein",
+                                   "Prostatic Acid Phosphatase",
+                                   #"prostate-specific androgen-regulated transcription factor",
+                                   "prostate specific antigen",
+                                   "prostate cancer antigen 3",
+                                   "alpha-methylacyl-CoA racemase"),
+                     gene = c("SLC45A3","ACPP","KLK3","PCA3","AMACR"))
+
+tgenes = c("STEAP1","FOLH1","KLK2","CD276","CD46","TMEFF2","TACSTD2")
+
+#sample 100 gene
+#save(geneann, file = "U:\\team_share\\tfls\\2022_12_31_scRNASeq/geneann.RData")
+load("U:\\team_share\\tfls\\2022_12_31_scRNASeq/geneann.RData", verbose = TRUE)
+
+
+if(FALSE){
+  selected_genes = geneann$Symbol[sample(1:nrow(geneann),100, replace = FALSE)]
+  selected_genes = c(selected_genes[!selected_genes %in% c(emarkers$gene, tgenes, hk)], emarkers$gene, tgenes, hk)
+  
+  sampledgenes = geneann %>%
+    as.data.frame() %>%
+    filter(Symbol %in% selected_genes)
+  
+  write.csv(sampledgenes,file.path(out_dir,"sampledgenes.csv"), row.names = FALSE)
+}
+sampledgenes = read.csv(file.path(out_dir,"sampledgenes.csv"))
+
+
+if (FALSE){
+  load("U:\\team_share\\tfls\\2022_12_31_scRNASeq/dta_dong.RData", verbose = T)
+  all(sampledgenes$Gene_ID %in% colnames(dta_dong))
+
+  dong1 = dta_dong[,c(colnames(dta_dong)[1:9],sampledgenes$Gene_ID)]
+  dong1 = dong1 %>% 
+    mutate(sbj = paste0("P",sbj)) %>%
+    pivot_longer(cols = 10:ncol(dong1), names_to = "ensembl", values_to = "count") %>%
+    left_join(geneann %>%
+                select(Gene_ID, Symbol), by = c("ensembl" = "Gene_ID")) %>%
+    select(-ensembl) %>%
+    mutate(count = as.numeric(count)) %>%
+    pivot_wider(names_from = "Symbol", values_from = count)
+  
+  rm(dta_dong)
+  
+  load("U:\\team_share\\tfls\\2022_12_31_scRNASeq/dta_tuong.RData", verbose = T)
+  all(sampledgenes$Symbol %in% colnames(dta_tuong))
+  
+  tuong1 = dta_tuong[,c("cell_id",sampledgenes$Symbol, colnames(dta_tuong)[22395:22449])]
+  rm(dta_tuong)
+  
+  
+  load("U:\\team_share\\tfls\\2022_12_31_scRNASeq/dta_chen.RData", verbose = T)
+  all(sampledgenes$Symbol %in% colnames(dta_chen))
+  chen1 = dta_chen[,c("cell_id",sampledgenes$Symbol, colnames(dta_chen)[23557:23609])]
+  rm(dta_chen)
+  
+  load("U:\\team_share\\tfls\\2022_12_31_scRNASeq/dta_song.RData", verbose = T)
+  all(sampledgenes$Symbol %in% colnames(dta_song))
+  song1 = dta_song[,c("cell_id",sampledgenes$Symbol, colnames(dta_song)[21879:21889])]
+  rm(dta_song)
+  
+  save(tuong1, chen1,song1, dong1, file = "U:\\team_share\\tfls\\2022_12_31_scRNASeq/subdta_sgenes.RData")
+}
+
+#save(tuong1, chen1, song1,dong1, file = "U:\\team_share\\tfls\\2022_12_31_scRNASeq/subdta_sgenes.RData")
+load( "U:\\team_share\\tfls\\2022_12_31_scRNASeq/subdta_sgenes.RData", verbose = TRUE)
+
+#combinatioins of sgenes
+glist = t(combn(sampledgenes$Symbol, 2))
+colnames(glist) = c("g1","g2")
+
+glist_ensembl = glist %>%
+  as.data.frame() %>%
+  left_join(geneann %>%
+              as.data.frame() %>%
+              select(Gene_ID, Symbol), by = c("g1" = "Symbol")) %>%
+  rename(g1en = Gene_ID) %>%
+    left_join(geneann %>%
+              as.data.frame() %>%
+              select(Gene_ID, Symbol), by = c("g2" = "Symbol")) %>%
+  rename(g2en = Gene_ID)  %>%
+  select(g1en, g2en)
+
+lowerfun <- function(data, mapping) {
+  ggplot(data = data, mapping = mapping)+ 
+    geom_point(alpha = .25) + 
+    geom_smooth(method = "lm", formula = y ~ x, 
+                fill = "blue", color = "red", size = 0.5)
+}
+
+getDropout = function(ddta, glist1, glist2, byvar){
+  
+  #check gene list
+  if (length(glist1) != length(glist2)) warning("Gene List 1 and Gene List2 are not in same length!")
+  
+  dropout = data.frame(g1 = character(),
+                     g2 = character(),
+                     byvar = character(),
+                     do2 = numeric(),
+                     do1a = numeric(),
+                     do1b = numeric(),
+                     do0 = numeric())
+  
+  for (i in 1:length(glist1)){
+    gene1 = glist1[i]
+    gene2 = glist2[i]
+    dta2 = ddta %>%
+      as.data.frame() %>%
+      dplyr::select(cell_id, !!gene1, all_of(glist2[i]), all_of(byvar)) %>%
+      rename(byvar = !!byvar,
+             g1 = !!glist1[i],
+             g2 = !!glist2[i]) %>%
+      mutate(g1 = g1 == 0,
+             g2 = g2 == 0) %>%
+      mutate(both = g1 + g2)
+
+    tmp = dta2 %>%
+      group_by(byvar) %>%
+      summarise(do2 = sum(both == 2),
+                do1a = sum(g1 & !g2),
+                do1b = sum(!g1 & g2),
+                do0 = sum(both == 0)) %>%
+      mutate(g1 = glist1[i],
+             g2 = glist2[i]) %>%
+      relocate(g1,.before = byvar) %>%
+      relocate(g2,.after = g1)
+    
+    dropout = bind_rows(dropout,tmp)
+  }
+  
+  dropout = dropout %>%
+    mutate(pct_do2 = 100*do2/(do2 +do1a + do1b + do0),
+           pct_do1 = 100*(do1a +do1b)/(do2 + do1a + do1b + do0),
+           pct_doa = 100*(do1a +do2)/(do1a + do2 + do0),
+           pct_dob = 100*(do1b +do2)/(do1b + do2 + do0)) %>%
+    rename(!!byvar:= byvar)
+  
+  return(dropout)
+}
+
+```
+  
+## coexpression with counts  
+  
+```{r echo = FALSE, message = FALSE}
+transformCounts = function(d){
+  d = ifelse(d == 0,"Neg","POS")
+  return(d)
+}
+tuong1a = tuong1 %>%
+  mutate(across(RPL17:LAMP2, ~ transformCounts(.)))
+
+
+```
+
+
+
+## Co-expression  with dropout
+  
+
+```{r echo = FALSE, message  = FALSE}
+
+getVennDiagram = function(data, subs,filter, complist,ds, outdir, title){
+  
+  #subsetting
+  if (!is.null(subs)) data = data %>% filter(eval(parse(text = subs)))
+  
+  #filtering
+  if (!is.null(filter)) data  = data %>% filter(eval(parse(text = filter)))
+  
+  if (length(complist) == 3){
+    p1 = data %>%
+      ggplot(aes_string(A = complist[1],
+                        B = complist[2],
+                        C = complist[3])) +
+      geom_venn(text_size = 2, 
+                set_name_size = 3,
+                stroke_size = 0.4,
+                fill_alpha = 0.2,
+                text_color = "blue",
+                auto_scale = FALSE) +
+      theme_bw() +
+      theme(strip.text = element_text(size = 8),
+            axis.text = element_blank(),
+            axis.title = element_blank(),
+            axis.ticks = element_blank(),
+            panel.grid = element_blank()) +
+      coord_fixed() +
+      ggtitle(paste0("Venn Diagram with ",ds," cells")) +
+      facet_wrap(~ Subject, ncol = 5) 
+    
+    temp_file = tempfile(fileext = ".png")
+    ggsave(temp_file,p1, width = 12, height = 10, unit = "in")
+    file.copy(temp_file,file.path(outdir,paste0("VennDiagram_",ds,"_", length(complist),"genes.png")), overwrite = TRUE)
+    
+    for (id in unique(data$Subject)){
+      p2 = data %>%
+        filter(Subject == id) %>%
+              ggplot(aes_string(A = complist[1],
+                        B = complist[2],
+                        C = complist[3])) +
+      geom_venn(text_size = 6, 
+                set_name_size = 7,
+                stroke_size = 0.4,
+                fill_alpha = 0.2,
+                text_color = "blue",
+                auto_scale = FALSE) +
+      theme_bw() +
+      theme(strip.text = element_text(size = 8),
+            axis.text = element_blank(),
+            axis.title = element_blank(),
+            axis.ticks = element_blank(),
+            panel.grid = element_blank()) +
+      coord_fixed() +
+      ggtitle(paste0("Venn Diagram with ",ds," cells, Subject: ",id))
+      
+      temp_file = tempfile(fileext = ".png")
+      ggsave(temp_file,p2, width = 12, height = 10, unit = "in")
+      file.copy(temp_file,file.path(outdir,paste0("VennDiagram_",ds,"_", length(complist),"genes_",id,".png")), overwrite = TRUE)
+    }
+
+  }else if (length(complist) == 2){
+        p1 = data %>%
+          ggplot(aes_string(A = complist[1],
+                            B = complist[2])) +
+          geom_venn(text_size = 2, 
+                    set_name_size = 3,
+                    stroke_size = 0.4,
+                    fill_alpha = 0.2,
+                    text_color = "blue",
+                    auto_scale = FALSE) +
+          theme_bw() +
+          theme(strip.text = element_text(size = 8),
+                axis.text = element_blank(),
+                axis.title = element_blank(),
+                axis.ticks = element_blank(),
+                panel.grid = element_blank()) +
+          coord_fixed() +
+          ggtitle(paste0("Venn Diagram with ",ds," cells")) +
+          facet_wrap(~ Subject, ncol = 5) 
+        
+        temp_file = tempfile(fileext = ".png")
+        ggsave(temp_file,p1, width = 12, height = 10, unit = "in")
+        file.copy(temp_file,file.path(outdir,paste0("VennDiagram_",ds,"_", length(complist),"genes.png")), overwrite = TRUE)
+    
+    for (id in unique(data$Subject)){
+      p2 = data %>%
+        filter(Subject == id) %>%
+              ggplot(aes_string(A = complist[1],
+                        B = complist[2])) +
+      geom_venn(text_size = 6, 
+                set_name_size = 7,
+                stroke_size = 0.4,
+                fill_alpha = 0.2,
+                text_color = "blue",
+                auto_scale = FALSE) +
+      theme_bw() +
+      theme(strip.text = element_text(size = 8),
+            axis.text = element_blank(),
+            axis.title = element_blank(),
+            axis.ticks = element_blank(),
+            panel.grid = element_blank()) +
+      coord_fixed() #+
+      #ggtitle(paste0("Venn Diagram with ",ds," cells, Subject: ",id))
+      
+      #add hk genes
+      p3 = data %>%
+        filter(Subject == id) %>%
+        ggplot(aes(A = GAPDH,
+                   B = RPL13A)) +
+        geom_venn(text_size = 6, 
+                  set_name_size = 7,
+                  stroke_size = 0.4,
+                  fill_alpha = 0.2,
+                  text_color = "blue",
+                  auto_scale = FALSE) +
+        theme_bw() +
+        theme(strip.text = element_text(size = 8),
+              axis.text = element_blank(),
+              axis.title = element_blank(),
+              axis.ticks = element_blank(),
+              panel.grid = element_blank()) +
+        coord_fixed() 
+      
+      p4 = plot_grid(p2, p3, ncol = 2,labels = paste0("Venn Diagram with ",ds," cells, Subject: ",id))
+      
+      
+      temp_file = tempfile(fileext = ".png")
+      ggsave(temp_file,p4, width = 12, height = 10, unit = "in")
+      file.copy(temp_file,file.path(outdir,paste0("VennDiagram_",ds,"_", length(complist),"genes_",id,".png")), overwrite = TRUE)
+    }
+  }
+}
+
+#tuong, 3 genes
+getVennDiagram(data = tuong1 %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = Author.s.cell.type,
+                           Subject = sbj) %>%
+                 filter(!grepl("_N", Subject)),
+               complist = c("PSMA","STEAP1","PSA"),
+               filter = NULL,
+               subs = "grepl('EPithelial',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Tuong",
+               ds = "Tuong_Epithelial")
+
+#tuong, 2 genes
+getVennDiagram(data = tuong1 %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = Author.s.cell.type,
+                           Subject = sbj) %>%
+                 filter(!grepl("_N", Subject)),
+               complist = c("PSMA","STEAP1"),
+               filter = "PSA",
+               subs = "grepl('EPithelial',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Tuong",
+               ds = "Tuong_Epithelial_PSA+")
+
+#Chen, 3 genes
+getVennDiagram(data = chen1 %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = celltype1,
+                           Subject = sbj),
+               complist = c("PSMA","STEAP1","PSA"),
+               filter = NULL,
+               subs = "grepl('Luminal|Basal',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Chen",
+               ds = "Chen_Epithelial")
+
+#Chen, 2 genes
+getVennDiagram(data = chen1 %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = celltype1,
+                           Subject = sbj),
+               complist = c("PSMA","STEAP1"),
+               filter = "PSA",
+               subs = "grepl('Luminal|Basal',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Chen",
+               ds = "Chen_Epithelial_PSA+")
+
+#Song, 3 genes
+getVennDiagram(data = song1 %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = ID,
+                           Subject = orig.ident) %>%
+                 filter(!grepl("_N", Subject)),
+               complist = c("PSMA","STEAP1","PSA"),
+               filter = NULL,
+               subs = "grepl('LE',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Song",
+               ds = "Song_Epithelial")
+
+#song, 2 genes
+getVennDiagram(data = song1 %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = ID,
+                           Subject = orig.ident) %>%
+                 filter(!grepl("_N", Subject)),
+               complist = c("PSMA","STEAP1"),
+               filter = "PSA",
+               subs = "grepl('LE',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Song",
+               ds = "Song_Epithelial_PSA+")
+
+#Dong, 3 genes
+getVennDiagram(data = dong1 %>%
+                 filter(!is.na(KLK3)) %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = CellType,
+                           Subject = sbj) %>%
+                 filter(!grepl("_N", Subject)),
+               complist = c("PSMA","STEAP1","PSA"),
+               filter = NULL,
+               subs = "grepl('Epithelial',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Dong",
+               ds = "Dong_Epithelial")
+
+#Dong, 2 genes
+getVennDiagram(data = dong1 %>%
+                  filter(!is.na(KLK3)) %>%
+                 summarise(PSA = KLK3 >0 ,
+                           PSMA = FOLH1 > 0,
+                           RPL13A = RPL13A > 0,
+                           GAPDH = GAPDH > 0,
+                           STEAP1 = STEAP1 > 0,
+                           cell_id = cell_id,
+                           Celltype = CellType,
+                           Subject = sbj) %>%
+                 filter(!grepl("_N", Subject)),
+               complist = c("PSMA","STEAP1"),
+               filter = "PSA",
+               subs = "grepl('Epithelial',data$Celltype, ignore.case = TRUE)",
+               outdir = "U:\\team_share\\tfls\\2023_1_17_scRNASeq\\VennDiagram\\Dong",
+               ds = "Dong_Epithelial_PSA+")
+
+
+```
+
+##    Dropout   
+  
+```{r echo = FALSE, message = FALSE}  
+
+do_tuong_bySubject = getDropout(ddta = tuong1,
+                                glist1 = glist[,1],
+                                glist2 = glist[,2],
+                                by = "sbj")
+do_tuong_bycelltype = getDropout(ddta = tuong1,
+                                glist1 = glist[,1],
+                                glist2 = glist[,2],
+                                by = "Author.s.cell.type")
+tmp = do_tuong_bycelltype %>%
+  left_join(geneann %>%
+              select(Symbol, genecat), by = c("g1" = "Symbol")) %>%
+  rename(g1cat = genecat) %>%
+  left_join(geneann %>%
+              select(Symbol, genecat), by = c("g2" = "Symbol")) %>%
+  rename(g2cat = genecat) %>%
+  mutate(genecat = paste0(g1cat,"_",g2cat)) %>%
+  mutate(genecat = recode(genecat,
+                          "prostate_hk" = "hk_prostate",
+                          "random_hk" = "hk_random",
+                          "random_prostate" = "prostate_random")) %>%
+  group_by(Author.s.cell.type,genecat) %>%
+  summarise(pct_do2 = mean(pct_do2),
+            pct_do1 = mean(pct_do1),
+            pct_doa = mean(pct_doa),
+            pct_dob = mean(pct_dob))
+  
+  ggplot(aes(x = pct_do1, y = pct_do2)) +
+  geom_point()
+
+
+do_tuong_bycelltype %>% 
+  filter(pct_do2 > pct_do1) %>%
+  filter(g1 %in% emarkers$gene, g2 %in% emarkers$gene) %>%
+  group_by(g1, Author.s.cell.type) %>%
+  summarise(do2_mean = mean(pct_do2),
+            do2_sd = sd(pct_do2),
+            do1_mean = mean(pct_do1),
+            do1_sd = sd(pct_do1)) %>%
+  ggplot(aes(x = do1_mean, y = do2_mean, color = Author.s.cell.type)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1) +
+  geom_text(aes(x = do1_mean, y = do2_mean, label = g1)) +
+  theme_bw()
+
+
+```
+  
+##   Simulation  
+ 
+```{r echo = FALSE}
+sdta = data.frame(m = runif(1000),
+                  n = runif(1000)) %>%
+  mutate(single = m + n - 2*m*n,
+         dual = m*n,
+         sum = m + n) %>%
+  mutate(ind1 = abs(m -n) < 0.5,
+         ind2 = sum < 1.4) 
+sdta %>%
+  ggplot(aes(x = single, y = dual, col = ind2)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "blue") +
+  labs(color = "p1 + p2 > 1.4?") +
+  theme_bw() +
+  ggtitle("Co-dropout of two genes with dropout probability p1 and p2")
+
+
+
+sdta %>%
+  ggplot(aes(x = m, y = n , col = ind2)) +
+  geom_point() +
+  labs(x = "P1", y = "P2", color = "Dual > Single")
+
+
+```
+  
+##   Counts
+  
+```{r echo = FALSE}  
+#count KLK+, PSMA+/KLK3+, STEAP1+/KLK3+, STEAP1+PSMA+//KLK3+
+countdta = tuong1 %>%
+  group_by(sbj, Author.s.cell.type) %>%
+  summarise(KLK3pos = sum(KLK3 >0),
+            STEAP1_KLK3 = sum(KLK3 > 0 & STEAP1 > 0),
+            PSMA_KLK3 = sum(KLK3 > 0 & FOLH1 > 0),
+            STEAP1_PSMA_KLK3 = sum(KLK3 > 0 & STEAP1 > 0 & FOLH1 > 0)) %>%
+  rename(celltype = Author.s.cell.type) %>%
+  mutate(ds = "Tuong") %>%
+  bind_rows(chen1 %>%
+              mutate(sbj = paste0("P",sbj)) %>%
+              group_by(sbj, celltype1) %>%
+              summarise(KLK3pos = sum(KLK3 >0),
+                        STEAP1_KLK3 = sum(KLK3 > 0 & STEAP1 > 0),
+                        PSMA_KLK3 = sum(KLK3 > 0 & FOLH1 > 0),
+                        STEAP1_PSMA_KLK3 = sum(KLK3 > 0 & STEAP1 > 0 & FOLH1 > 0)) %>%
+              rename(celltype = celltype1) %>%
+              mutate(ds = "Chen")) %>%
+  bind_rows(song1 %>%
+              group_by(sbj, ID) %>%
+              summarise(KLK3pos = sum(KLK3 >0),
+                        STEAP1_KLK3 = sum(KLK3 > 0 & STEAP1 > 0),
+                        PSMA_KLK3 = sum(KLK3 > 0 & FOLH1 > 0),
+                        STEAP1_PSMA_KLK3 = sum(KLK3 > 0 & STEAP1 > 0 & FOLH1 > 0)) %>%
+              rename(celltype = ID) %>%
+              mutate(ds = "Song")) 
+
+write.csv(countdta, file.path(out_dir, "CountsBySbjByCelltype.csv"), row.names = FALSE)
+
+
+#count dropout for gene clusters
+tuong1 %>%
+  filter(!grepl("_N",sbj)) %>%
+  group_by(Author.s.cell.type) %>%
+  summarise(RPL13A = round(sum(RPL13A == 0)/n(),3),
+            GAPDH = round(sum(GAPDH ==0)/n(),3),
+            PGK1 = round(sum(PGK1 == 0)/n(),3),
+            HPRT1 = round(sum(HPRT1 ==0)/n(),3),
+            KLK3 = round(sum(KLK3 == 0)/n(),3),
+            FOLH1 = round(sum(FOLH1 == 0)/n(),3),
+            STEAP1 = round(sum(STEAP1 == 0)/n(),3),
+            n = n()) %>%
+  flextable() %>%
+  set_caption("Dropout by genes and cell types: Tuong")
+
+cts_bySbjGeneCelltype = tuong1 %>%
+  select(cell_id,sbj, Author.s.cell.type, all_of(sampledgenes$Symbol)) %>%
+  pivot_longer(cols = all_of(sampledgenes$Symbol), names_to = "gene", values_to = "counts") %>%
+  group_by(sbj, Author.s.cell.type, gene) %>%
+  summarise(ndo = sum(counts == 0),
+            n = n()) %>%
+  ungroup()
+
+cts_byGeneCelltype = cts_bySbjGeneCelltype %>%
+  group_by(Author.s.cell.type, gene) %>%
+  summarise(ndo = sum(ndo),
+            n = sum(n)) %>%
+  ungroup() %>%
+  mutate(fract_do = ndo/n)
+
+cts_byGeneCelltype %>%
+  select(Author.s.cell.type,gene, fract_do) %>%
+  pivot_wider(names_from = "Author.s.cell.type", values_from = "fract_do")
+
+
+cts_byGeneCelltype %>%
+  filter(grepl("Epithelial", Author.s.cell.type, ignore.case = TRUE)) %>%
+  filter(gene %in% c("GAPDH","ACPP","KLK3","FOLH1","STEAP1","EVX1")) %>%
+  ggplot(aes(x = Author.s.cell.type, y = fract_do, fill = gene)) +
+  geom_bar(stat = "identity",
+           position = "dodge") +
+  labs(x = "Cell Types", y = "Dropput fraction", fill = "Selected Genes") +
+  ggtitle("Tuong Data") +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14))
+
+chen1 %>%
+  filter(!grepl("_N",sbj)) %>%
+  group_by(celltype1) %>%
+  summarise(RPL13A = round(sum(RPL13A == 0)/n(),3),
+            GAPDH = round(sum(GAPDH ==0)/n(),3),
+            PGK1 = round(sum(PGK1 == 0)/n(),3),
+            HPRT1 = round(sum(HPRT1 ==0)/n(),3),
+            KLK3 = round(sum(KLK3 == 0)/n(),3),
+            FOLH1 = round(sum(FOLH1 == 0)/n(),3),
+            STEAP1 = round(sum(STEAP1 == 0)/n(),3),
+            n = n()) %>%
+  flextable() %>%
+  set_caption("Dropout by genes and by cell types: Chen")
+
+```
+  
+##   Descriptive  
+  
+```{r echo = FALSE}
+
+########################################################
+##    Summarise total counts by Subjects and by cells
+##    to compare the difference of data sources
+#######################################################
+
+dta_ctSummary = tuong1 %>%
+  filter(!grepl("_N", sbj)) %>%
+  select(cell_id, nCount_RNA, nFeature_RNA, Author.s.cell.type, sbj) %>%
+  rename(celltype = Author.s.cell.type) %>%
+  mutate(ds = "Tuong") %>%
+  bind_rows(chen1 %>%
+              select(cell_id, nCount_RNA, nFeature_RNA, celltype1, sbj)%>%
+              rename(celltype = celltype1) %>%
+              mutate(ds = "Chen",
+                     sbj = paste0("P", sbj))) %>%
+    bind_rows(song1 %>%
+                filter(!grepl("_N", sbj)) %>%
+                select(cell_id, nCount_RNA, nFeature_RNA,ID, sbj) %>%
+                rename(celltype = "ID") %>%
+                mutate(ds = "Song")) %>%
+  bind_rows(dong1 %>%
+              select(cell_id, nCount_RNA, nFeature_RNA, CellType, sbj) %>%
+              rename(celltype = CellType) %>%
+              mutate(ds = "Dong"))
+
+pp1 = dta_ctSummary %>%
+  group_by(ds, sbj) %>%
+  summarise(ncount = sum(nCount_RNA),
+            nfeature = sum(nFeature_RNA)) %>%
+  ungroup() %>%
+  ggplot(aes(x = ncount, y = nfeature, color = ds)) +
+  geom_point(size = 2) +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 12)) +
+  labs(x = "Total Counts by Subjects", y = "Total Features by Subjects", color = "Data Sources")
+
+temp_file = tempfile(fileext = ".png")
+ggsave(temp_file,pp1, width = 12, height = 10, unit = "in")
+file.copy(temp_file,file.path(out_dir1,"Description","ScatterPlot_Counts_Features_bySbj.png"), overwrite = TRUE)
+
+pp2 = dta_ctSummary %>%
+  ggplot(aes(x = nCount_RNA, color = ds)) +
+  geom_density() +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x = "Total Counts by Sequencing Cells", y = "Density", color =  "Data Sources") +
+  theme(legend.position = "bottom") +
+   theme(legend.position = "bottom",
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 12)) 
+
+temp_file = tempfile(fileext = ".png")
+ggsave(temp_file,pp2, width = 12, height = 10, unit = "in")
+file.copy(temp_file,file.path(out_dir1,"Description","DensityPlot_Counts_byCell.png"), overwrite = TRUE)
+  
+
+########################################################
+###summarise count matrix by row and by column
+########################################################
+
+load("U:\\team_share\\tfls\\2022_12_31_scRNASeq/row_column_summary.RData", verbose = TRUE)
+convertDF = function(data,ann) {
+  data = as.data.frame(data) %>%
+    rownames_to_column(var = "cell_id")
+  colnames(data)[2] = "counts"
+  data = data %>%
+    left_join(ann %>%
+                select(cell_id, nCount_RNA, nFeature_RNA), by = "cell_id")
+  return(data)
+}
+
+tuong_row = convertDF(data = tuong_row, ann = tuong1)
+chen_row = convertDF(data = chen_row, ann = chen1)
+song_row = convertDF(data = song_row, ann = song1)
+
+p1 = tuong_row %>%
+  mutate(ds = "tuong") %>%
+  bind_rows(chen_row %>%
+              mutate(ds = "chen")) %>%
+  bind_rows(song_row %>%
+              mutate(ds = "song")) %>%
+  ggplot(aes(x = counts, y = nCount_RNA, color = ds)) +
+  geom_smooth(formula = y~ x, method = "lm") +
+  geom_point(alpha = 0.2) +
+  theme_bw() +
+  labs(color = "Data Sources", x = "Number of Dropouts", y = "Total Counts")
+
+p2 = tuong_row %>%
+  mutate(ds = "Tuong") %>%
+  bind_rows(chen_row %>%
+              mutate(ds = "Chen")) %>%
+  bind_rows(song_row %>%
+              mutate(ds = "Song")) %>%
+  ggplot(aes(x = counts, y = nFeature_RNA, color = ds)) +
+  geom_smooth(formula = y~ x, method = "lm") +
+  geom_point(alpha = 0.2) +
+  theme_bw() +
+  labs(color = "Data Sources", x = "Number of Dropouts", y = "Total Number of Features")
+
+p3 = ggpubr::ggarrange(p1, p2, # list of plots
+                  labels = "AUTO", # labels
+                  common.legend = T, # COMMON LEGEND
+                  legend = "bottom", # legend position
+                  align = "hv", # Align them both, horizontal and vertical
+                  nrow = 2)
+
+temp_file = tempfile(fileext = ".png")
+ggsave(temp_file,p3, width = 10, height = 10, unit = "in")
+file.copy(temp_file,file.path(out_dir1,"Description","CellSummaryPlot.png"), overwrite = TRUE)
+
+
+hkgenes = read.csv("C:\\Users\\mliu10\\Documents\\amgen\\single_cell_sequencing\\HK_genes.csv", header = FALSE)
+colnames(hkgenes) = c("Symbol","Ensembl")
+hkgenes$Symbol = trimws(hkgenes$Symbol, which = "both")
+
+convertColumnToDF = function(data){
+  data = as.data.frame(data) %>%
+    rownames_to_column(var = "gene") 
+  colnames(data)[2] = "count"
+  data = data %>%
+    arrange(desc(count))
+  return(data)
+}
+
+tuong_column = convertColumnToDF(tuong_column)
+chen_column = convertColumnToDF(chen_column)
+song_column = convertColumnToDF(song_column)
+
+p4 = tuong_column %>%
+  rename(Tuong = count) %>%
+  full_join(chen_column %>%
+              rename(Chen = count), by = "gene") %>%
+  full_join(song_column %>%
+              rename(Song = count), by = "gene") %>%
+  mutate(isHK = ifelse(gene %in% hkgenes[,1], "HK", "NotHK"))%>%
+  ggpairs(columns = 2:4, mapping=ggplot2::aes(colour = isHK)) +
+  theme_bw() +
+  ggtitle("Correlation of Dropouts by Genes")
+
+temp_file = tempfile(fileext = ".png")
+ggsave(temp_file,p4, width = 10, height = 10, unit = "in")
+file.copy(temp_file,file.path(out_dir1,"Description","GeneSummaryPlot.png"), overwrite = TRUE)
+  
+tuong_column %>%
+  filter(gene %in% c(hk, tgenes, emarkers$gene)) %>%
+  mutate(tuong = count/nrow(tuong1)) %>%
+  select(gene, tuong) %>%
+  full_join(chen_column %>%
+              filter(gene %in% c(hk, tgenes, emarkers$gene)) %>%
+              mutate(chen = count/nrow(chen1)) %>%
+              select(gene, chen), by = "gene") %>%
+    full_join(song_column %>%
+              filter(gene %in% c(hk, tgenes, emarkers$gene)) %>%
+              mutate(song = count/nrow(song1)) %>%
+              select(gene, song), by = "gene")
+
+
+```
