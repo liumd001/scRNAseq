@@ -9,62 +9,37 @@ require(ggplot2)
 require(ggven)
 require(VennDiagram)
 
+datafolder = '/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/'
 
-out_dir = "U:\\team_share\\tfls\\2022_12_31_scRNASeq"
+#tuong data from prostate cancer atlas
+tuong <- readRDS("/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/prostate_portal_300921_tuong.RDS")
 
-tuong <- readRDS("W:/devtm/cbd/users/bdecato/Prostate Single Cell/PMID_34936871_fig1.rds")
-
-tuong_row = apply(as.data.frame(t(as.matrix(tuong@assays$RNA@counts))), 1, function(x) sum(x == 0)) 
-tuong_column = apply(as.data.frame(t(as.matrix(tuong@assays$RNA@counts))), 2, function(x) sum(x == 0)) 
-
-dta_tuong = as.data.frame(t(as.matrix(tuong@assays$RNA@counts))) %>%
-  rownames_to_column(var = "cell_id") %>%
-  left_join(tuong@meta.data %>%
-              rename(sbj = Sample.ID) %>%
-              rownames_to_column(var = "cell_id"), by = "cell_id") %>%
-  distinct() 
-save(dta_tuong, file = file.path(out_dir, "dta_tuong.RData"))
-rm(tuong)
-rm(dta_tuong)
-
-#Chen data
-chen <- readRDS("W:/devtm/cbd/users/bdecato/Prostate Single Cell/GSE141445.rds")
-chen_row = apply(as.data.frame(t(as.matrix(chen@assays$RNA@counts))), 1, function(x) sum(x == 0)) 
-chen_column = apply(as.data.frame(t(as.matrix(chen@assays$RNA@counts))), 2, function(x) sum(x == 0)) 
-
-dta_chen = as.data.frame(t(as.matrix(chen@assays$RNA@counts))) %>%
-  rownames_to_column(var = "cell_id") %>%
-  left_join(chen@meta.data %>%
-              rownames_to_column(var = "cell_id"), by = "cell_id") %>%
-  distinct() %>%
-  rename(celltype1 = Author.s.cell.type,
-         celltype2 = cell.type...subgroup..standardized...standardized.,
-         sbj = Sample.ID)
-save(dta_chen, file = file.path(out_dir, "dta_chen.RData"))
-rm(chen)
-rm(dta_chen)
+#Chen data, #chen, gse141445
+list.files("/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/GSE141445")
+chen = read.table(gzfile("/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/GSE141445/GSM4203181_data.matrix.txt.gz"))
+chen_samples = getGEO(filename = file.path(datafolder,"GSE141445_series_matrix.txt.gz"))@phenoData@data
+write.csv(chen_samples, file.path(datafolder,"chen_GSE141445_samples.csv"), row.names = FALSE)
 
 #Song data
-dge = readRDS("C:\\Users\\mliu10\\Documents\\Amgen_documents\\prostate_scRNAseq\\GSE176031\\Seurat_dataset\\dge_E.rds")
-song_row = apply(as.data.frame(t(as.matrix(dge@assays$RNA@counts))), 1, function(x) sum(x == 0)) 
-song_column = apply(as.data.frame(t(as.matrix(dge@assays$RNA@counts))), 2, function(x) sum(x == 0)) 
-
-
-dta_song = dge@assays$RNA@counts %>%
-  as.data.frame() %>%
-  t() %>%
-  as.data.frame() %>%
-  rownames_to_column(var = "cell_id") %>%
-  left_join(dge@meta.data %>%
-              as.data.frame() %>%
-              rownames_to_column(var = "cell_id"))
-save(dta_song, file = file.path(out_dir, "dta_song.RData"))
-rm(dge)
-rm(dta_song)
+list.files(file.path(datafolder,"GSE176031"))
+untar(file.path(datafolder,"GSE176031","GSE176031_RAW.tar"), exdir = file.path(datafolder,"GSE176031"))
+song_files = list.files(file.path(datafolder,"GSE176031"), full.names = TRUE)
+song_files = song_files[grepl("\\.gz", song_files)]
+song = lapply(song_files,fread)
+song = lapply(1:length(song), function(x){
+  dta = song[[x]]
+  colnames(dta)[2:ncol(dta)] <- paste0(colnames(dta)[2:ncol(dta)],"_",x)
+  return(dta)
+})
+song <- Reduce(function(x,y) merge(x, y, by = "GENE", all = TRUE), song)
+song_samples = GEOquery::getGEO(filename = file.path(datafolder,"GSE176031_series_matrix.txt"))@phenoData@data
+write.csv(song, file.path(datafolder,"dta_song_renamecolumns.csv"), row.names = FALSE)
+write.csv(song_samples, file.path(datafolder,"dta_song_samples.csv"), row.names = FALSE)
 
 #Dong data
 require(data.table)
 require(openxlsx)
+
 dongfolder = "C:\\Users\\mliu10\\Documents\\Amgen_documents\\prostate_scRNAseq\\GSE137829"
 dongfiles = list.files(dongfolder)
 dongfiles = dongfiles[grepl("^GSM", dongfiles)]
