@@ -36,10 +36,13 @@ tgenes = c("STEAP1","FOLH1")
 ########################################
 ##    data
 #######################################
-tuong <- readRDS("W:/devtm/cbd/users/bdecato/Prostate Single Cell/PMID_34936871_fig1.rds")
+datafolder = '/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/'
+
+#tuong data from prostate cancer atlas
+tuong <- readRDS("/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/prostate_portal_300921_tuong.RDS")
 
 #get the raw counts
-dta1 <- as.matrix(tuong@assays$RNA@counts)
+dta1 <- as.matrix(tuong@assays@data$counts)
 
 ```
 
@@ -49,9 +52,11 @@ dta1 <- as.matrix(tuong@assays$RNA@counts)
 ```{r echo=FALSE}
 cell_id = colnames(dta1)
 allgenes = rownames(dta1)
-ann = tuong@meta.data %>%
-  select(nCount_RNA, nFeature_RNA, Author.s.cell.type, Author.s.sub.cell.type,Sample.ID, Louvain.clustering, Subject.ID) %>%
-  rownames_to_column(var = "cell_id")
+ann = tuong@colData %>%
+  as.data.frame() %>%
+  select(celltype,leiden, celltype.immune, patient) %>%
+  rownames_to_column(var = "cell_id") %>%
+  rename(SUBJID = patient)
 
 dta1 = t(dta1)
 dta1 = dta1 %>%
@@ -67,13 +72,15 @@ sgenes2 = c(sample(allgenes,size = 100),as.character(egene_expand[,2]), as.chara
 
 dropout = data.frame(g1 = character(),
                      g2 = character(),
-                     Sample.ID = character(),
+                     SUBJID = character(),
                      do2 = numeric(),
                      do1a = numeric(),
                      do1b = numeric(),
                      do0 = numeric())
 
 for (i in 1:length(sgenes1)){
+  if (!sgenes1[i] %in% colnames(dta1)) next
+  if (!sgenes2[i] %in% colnames(dta1)) next
   dta2 = dta1 %>%
     as.data.frame() %>%
     select(cell_id, all_of(sgenes1[i]), all_of(sgenes2[i])) %>%
@@ -82,14 +89,14 @@ for (i in 1:length(sgenes1)){
            g2 = !!sgenes2[i])
   
   tmp = dta2 %>%
-    group_by(Sample.ID) %>%
+    group_by(SUBJID) %>%
     summarise(do2 = sum(g1 == 0 & g2 == 0, na.rm = TRUE),
               do1a = sum(g1 == 0 & g2 != 0, na.rm = TRUE),
               do1b = sum(g1 != 0 & g2 == 0, na.rm = TRUE),
               do0 = sum(g1 != 0 & g2 != 0)) %>%
     mutate(g1 = sgenes1[i],
            g2 = sgenes2[i]) %>%
-    relocate(g1,.before = Sample.ID) %>%
+    relocate(g1,.before = SUBJID) %>%
     relocate(g2,.after = g1)
   
   dropout = bind_rows(dropout,tmp)
@@ -105,12 +112,12 @@ tmp0 = dropout %>%
   summarise(gene = g1,
             do1 = do2 + do1a,
             tot = do0+do1a+do1b+do2,
-            sbj = Sample.ID) %>%
+            sbj = SUBJID) %>%
   bind_rows(dropout %>% 
               summarise(gene = g2,
                         do1 = do2 + do1b,
                         tot = do0+do1a+do1b+do2,
-                        sbj = Sample.ID) ) %>%
+                        sbj = SUBJID)) %>%
   distinct() %>%
   mutate(pct_do = do1/tot) %>%
   filter(gene %in% hk) %>%
@@ -139,14 +146,14 @@ ggpairs(tmp0, lower = list(continuous = wrap(lowerfun))) +
 
 tmpa = dropout %>%
   filter(!g1 %in% hk) %>%
-  group_by(Sample.ID) %>%
+  group_by(SUBJID) %>%
   summarise(mean_pct_do2 = mean(pct_do2),
             sd_pct_do2 = sd(pct_do2),
             mean_pct_do1 = mean(pct_do1),
             sd_pct_do1 = sd(pct_do1)) 
 tmpb = dropout %>%
   filter(g1 %in% hk) %>%
-  group_by(Sample.ID) %>%
+  group_by(SUBJID) %>%
   summarise(mean_pct_do2 = mean(pct_do2),
             sd_pct_do2 = sd(pct_do2),
             mean_pct_do1 = mean(pct_do1),
@@ -170,7 +177,7 @@ plot(tmpb$mean_pct_do1, tmpb$mean_pct_do2)
 
 tmp1 = dropout %>%
   filter(g1 %in% hk) %>%
-  ggplot(aes(x = pct_do1, y = pct_do2, color = Sample.ID)) +
+  ggplot(aes(x = pct_do1, y = pct_do2, color = SUBJID)) +
   geom_point() +
   theme_bw() 
 
@@ -190,7 +197,7 @@ tmp2 = dropout %>%
 
 tmp1 %>%
   mutate(count2 = tmp2$count2) %>%
-  ggplot(aes(x = count1, y = count2, color = Sample.ID)) +
+  ggplot(aes(x = count1, y = count2, color = SUBJID)) +
   geom_point() +
   scale_x_log10() +
   scale_y_log10() +
@@ -198,6 +205,101 @@ tmp1 %>%
   stat_smooth(method = "lm", formula = y ~ x, geom = "smooth") +
   facet_grid(~ measure)
 
+```
+
+## test linkage disequilibrium of dropout
+
+```{r echo = FALSE}
+gene_ann = data.frame(gene = c(sample(allgenes,size = 100), as.character(egene_expand[,1]), as.character(hk_expand[,1]), tgenes[1]),
+                      type = c(rep("random",100), rep("prostate_biomarker1",nrow(egene_expand)),rep("housekeeping", nrow(hk_expand)),rep("prostate_biomarker2",1))) %>%
+  distinct()
+sgenes1 = intersect(sgenes1, colnames(dta1))
+df = expand.grid(sgenes1,sgenes1)
+df = df %>% filter(Var1 != Var2)
+op1 = data.frame(leiden = character(),
+                 p1 = numeric(),
+                 p2 = numeric(),
+                 p12 = numeric(),
+                 d = numeric(),
+                 r = numeric(),
+                 d_max = numeric(),
+                 gene1 = character(),
+                 gene2 = character())
+for (i in 1:nrow(df)){
+  Var1 = as.character(df$Var1[i])
+  Var2 = as.character(df$Var2[i])
+  d = dta1 %>%
+    dplyr::select(all_of(Var1), all_of(Var2), cell_id) %>%
+    left_join(ann %>%
+                dplyr::select(cell_id, leiden)) %>%
+    rename(Var1 = !!sym(Var1),
+           Var2 = !!sym(Var2))
+ d = d %>%
+    group_by(leiden) %>%
+    reframe(p1 = sum(Var1 == 0)/n(),
+            p2 = sum(Var2 == 0)/n(),
+            p12 = sum(Var1 == 0 & Var2 == 0)/n()) %>%
+    mutate(d = p12 - p1*p2) %>%
+    mutate(r = -d/sqrt(p1*(1-p1)*p2*(1-p2))) %>%
+    mutate(d_max = ifelse(d <0, min(p1*(1-p2),p2*(1-p1)), max(-p1*p2,-(1-p1)*(1-p2)))) %>%
+    mutate(gene1 = Var1,
+           gene2 = Var2)
+ op1 = bind_rows(op1, d)
+ 
+}
+
+#calculate chisq
+op1 = op1 %>%
+  left_join(dta1 %>% 
+              left_join(ann) %>%
+              group_by(leiden) %>% 
+              reframe(n = n())) %>%
+  mutate(chisq = n*d*d/(p1*(1-p1)*p2*(1-p2)))
+#calculate p value
+op1 = op1 %>%
+  mutate(pvalue = 1 - pchisq(chisq, df = 1))
+#fdr adjusted
+op1 = op1 %>%
+  mutate(padj = p.adjust(pvalue,method = "fdr"))
+
+#add gene type
+op1 = op1 %>%
+  mutate(type1 = case_when(gene1 %in% hk~ "housekeeping",
+                           gene1 %in% emarkers$gene ~ "emarker",
+                           gene1 %in% tgenes ~ "tgenes",
+                           TRUE ~ "random")) %>%
+    mutate(type2 = case_when(gene2 %in% hk~ "housekeeping",
+                           gene2 %in% emarkers$gene ~ "emarker",
+                           gene2 %in% tgenes ~ "tgenes",
+                           TRUE ~ "random"))
+
+op1 %>%
+  ggplot(aes(x = leiden, y = -log10(padj))) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitter(0.2), size = 0.3, alpha = 0.3) +
+  ggh4x::facet_grid2(type1 ~ type2, independent = "y", scales = "free") +
+  theme_bw()
+
+op1 %>%
+  ggplot(aes(x = leiden, y = r)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitter(0.2), size = 0.3, alpha = 0.3) +
+  ggh4x::facet_grid2(type1 ~ type2, independent = "y", scales = "free") +
+  theme_bw()
+
+
+op1 %>%
+  ggplot(aes(x = chisq, y = r, color = leiden)) +
+  #geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitter(0.2), size = 0.3, alpha = 0.3) +
+  ggh4x::facet_grid2(type1 ~ type2, independent = "y", scales = "free") +
+  theme_bw()
+
+d1 = op1 %>%
+  mutate(gene = paste(gene1, gene2, sep = "_")) %>%
+  select(leiden, r, gene) %>%
+  pivot_wider(names_from = leiden, values_from = r)
+write.csv(op1, '/Volumes/home/Drive/learning_lmd/dataset/scRNAseq/TFLs/output_LDTest.csv', row.names = FALSE)  
 ```
   
 ### by cell types  
@@ -216,6 +318,8 @@ dropout_byLouvain = data.frame(g1 = character(),
                      do0 = numeric())
 
 for (i in 1:length(sgenes1)){
+    if (!sgenes1[i] %in% colnames(dta1)) next
+  if (!sgenes2[i] %in% colnames(dta1)) next
   dta2 = dta1 %>%
     as.data.frame() %>%
     select(cell_id, all_of(sgenes1[i]), all_of(sgenes2[i])) %>%
@@ -224,14 +328,14 @@ for (i in 1:length(sgenes1)){
            g2 = !!sgenes2[i])
   
   tmp = dta2 %>%
-    group_by(Louvain.clustering) %>%
+    group_by(leiden) %>%
     summarise(do2 = sum(g1 == 0 & g2 == 0, na.rm = TRUE),
               do1a = sum(g1 == 0 & g2 != 0, na.rm = TRUE),
               do1b = sum(g1 != 0 & g2 == 0, na.rm = TRUE),
               do0 = sum(g1 != 0 & g2 != 0)) %>%
     mutate(g1 = sgenes1[i],
            g2 = sgenes2[i]) %>%
-    relocate(g1,.before = Louvain.clustering) %>%
+    relocate(g1,.before = leiden) %>%
     relocate(g2,.after = g1)
   
   dropout_byLouvain = bind_rows(dropout_byLouvain,tmp)
@@ -247,12 +351,12 @@ tmp0 = dropout_byLouvain %>%
   summarise(gene = g1,
             do1 = do2 + do1a,
             tot = do0+do1a+do1b+do2,
-            Louvain.clustering = Louvain.clustering) %>%
+            Louvain.clustering = leiden) %>%
   bind_rows(dropout_byLouvain %>% 
               summarise(gene = g2,
                         do1 = do2 + do1b,
                         tot = do0+do1a+do1b+do2,
-                        Louvain.clustering = Louvain.clustering) ) %>%
+                        Louvain.clustering = leiden) ) %>%
   distinct() %>%
   mutate(pct_do = do1/tot) %>%
   filter(gene %in% hk) %>%
@@ -279,4 +383,4 @@ ggpairs(tmp0, lower = list(continuous = wrap(lowerfun))) +
 
 
 ```
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+

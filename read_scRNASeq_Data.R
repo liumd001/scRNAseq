@@ -39,6 +39,22 @@ write.csv(song_samples, file.path(datafolder,"dta_song_samples.csv"), row.names 
 #Dong data
 require(data.table)
 require(openxlsx)
+untar(file.path(datafolder,"GSE137829","GSE137829_RAW.tar"), exdir = file.path(datafolder,"GSE137829"))
+dong_files = list.files(file.path(datafolder,"GSE137829"), full.names = TRUE)
+dong_files = dong_files[grepl("\\.gz", dong_files)]
+dong = lapply(dong_files,fread)
+dong <- Reduce(function(x,y) merge(x, y, by = c("Gene_ID","Symbol"), all = TRUE), dong)
+dong_samples = GEOquery::getGEO(filename = file.path(datafolder,"GSE137829","GSE137829_series_matrix.txt"))@phenoData@data
+write.csv(dong,file.path(datafolder,"GSE137829","dta_dong.csv"), row.names = FALSE)
+write.csv(dong_samples,file.path(datafolder,"GSE137829","dta_dong_samples.csv"), row.names = FALSE)
+
+
+
+
+
+
+
+
 
 dongfolder = "C:\\Users\\mliu10\\Documents\\Amgen_documents\\prostate_scRNAseq\\GSE137829"
 dongfiles = list.files(dongfolder)
